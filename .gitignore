@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+*.log
+
+# credentials - set them in Streamlit Cloud: app -> Settings -> Secrets
+.streamlit/secrets.toml
+
+# customer / order data stays local (this repo is public)
+*.csv
+*.xlsx
+*.xls
+*.kml
+!default_config.xlsx
