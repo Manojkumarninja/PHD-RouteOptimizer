@@ -30,7 +30,7 @@ lowest cost, shown on an OpenStreetMap map.
 1. Go to <https://share.streamlit.io> → **Create app** → **Deploy a public app
    from GitHub**.
 2. Repository `Manojkumarninja/PHD-RouteOptimizer`, branch `main`,
-   main file path **`mdc_streamlit_app.py`**.
+   main file path **`streamlit_app.py`** (`app.py` and `mdc_streamlit_app.py` open the same app).
 3. Under **Advanced settings → Secrets**, paste your database connection:
 
    ```toml
@@ -69,7 +69,8 @@ streamlit run mdc_streamlit_app.py
 | `mdc_streamlit_app.py` | The MDC route planner app |
 | `simulate_bangalore.py` | Multi-depot routing engine (OR-Tools); also a command-line tool for comparing scenarios from a constraints workbook |
 | `default_config.xlsx` | Default MDCs + vehicles. Replace it to change the defaults everyone sees |
-| `optimizer.py`, `app.py` | Original single-depot route planner (`streamlit run app.py`); the engine reuses its distance helpers |
+| `app.py`, `streamlit_app.py` | Entry points - both open the MDC route planner, so either works as the Streamlit Cloud main file |
+| `single_depot_app.py`, `optimizer.py` | Original single-depot route planner (`streamlit run single_depot_app.py`); the engine reuses its distance helpers |
 | `plot_simulation.py` | Route-map PNGs for scenario comparisons |
 
 ## Input table: `PHD_MDCRO_Base`
