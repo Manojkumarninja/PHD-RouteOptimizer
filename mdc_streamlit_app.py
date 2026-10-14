@@ -2,12 +2,15 @@
 mdc_streamlit_app.py - daily MDC route planner (Streamlit) over the
 multi-depot engine in simulate_bangalore.py.
 
-  * Customers + tonnage come only from the PHD_MDCRO_Base table, and only
+  * City switch at the top: Bengaluru (table PHD_MDCRO_Base) or Chennai
+    (PHD_MDCRO_Base_CHN). Each city keeps its own MDCs, vehicles, edits and plan.
+  * Customers + tonnage come only from the city's table, and only
     TODAY's rows. "Refresh data" re-queries, so new orders show up
     immediately. (If the DB isn't connected yet, the sample day from
     "Banglore Constraint1.xlsx" is shown as a clearly-labelled preview.)
-  * MDCs and vehicles default to Case 2 of "Banglore Constraint1.xlsx"
-    (MDC1 + MDC2 Boomanalli, one row per vehicle exactly as in the sheet).
+  * MDCs and vehicles default to Case 2 of the city's constraint workbook
+    (Bengaluru: MDC1 + MDC2 Boomanalli; Chennai: MDC1 + MDC2 Saligramam),
+    shipped as default_config.xlsx / default_config_chennai.xlsx.
     Edit them in the app, or download them as Excel, change them there and
     upload the file back.
   * Every customer's delivery window is editable too.
@@ -40,14 +43,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import simulate_bangalore as sim  # noqa: E402  (read_constraints / solve_case)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CONFIG = os.path.join(APP_DIR, "default_config.xlsx")   # MDCs + vehicles, committed with the app
-DEFAULTS_BOOK = os.environ.get("PHD_SAMPLE_BOOK",                 # local only: Case 2 + sample day
-                               r"D:\PHD Clustering\Banglore Constraint1.xlsx")
+DATA_DIR = os.environ.get("PHD_DATA_DIR", r"D:\PHD Clustering")   # local only: constraint workbooks
 DEFAULTS_CASE = "Case2"
 DB_CONN_NAME = "phd_db"
-DEFAULT_QUERY = "SELECT * FROM PHD_MDCRO_Base WHERE DATE(DeliveryDate) = :today"
+
+# One entry per city. `config` (MDCs + vehicles) is committed with the app;
+# `book` is the local constraint workbook it was built from (Case 2), which
+# also holds a sample day shown as a preview when the database isn't connected.
+CITIES = {
+    "Bengaluru": {
+        "table": "PHD_MDCRO_Base", "query_key": "query", "city_id": 48757,
+        "config": os.path.join(APP_DIR, "default_config.xlsx"),
+        "book": os.environ.get("PHD_SAMPLE_BOOK", os.path.join(DATA_DIR, "Banglore Constraint1.xlsx")),
+    },
+    "Chennai": {
+        "table": "PHD_MDCRO_Base_CHN", "query_key": "query_chennai", "city_id": 48758,
+        "config": os.path.join(APP_DIR, "default_config_chennai.xlsx"),
+        "book": os.path.join(DATA_DIR, "Chennai Constraint1.xlsx"),
+    },
+}
 DEFAULT_WINDOW = "9:30-13:30"
-DEFAULT_CITY_ID = 48757          # Bengaluru in PHD data
 OUT_OF_CITY_KM = 60              # farther than this from the day's median = bad location
 VEHICLE_PENALTY_RS = 10_000      # objective-only, see sim.solve_case docstring
 OSRM_ROUTE = "http://router.project-osrm.org/route/v1/driving/"
@@ -220,18 +235,23 @@ def db_configured() -> bool:
     return bool(url) and not any(p in url for p in ("USERNAME", "PASSWORD@HOST", "/DATABASE"))
 
 
-def load_from_db(today_iso: str) -> pd.DataFrame:
-    conn = st.connection(DB_CONN_NAME, type="sql")
+def city_query(city: str) -> str:
+    c = CITIES[city]
+    default = f"SELECT * FROM {c['table']} WHERE DATE(DeliveryDate) = :today"
     try:
-        query = st.secrets.get("phd_mdcro", {}).get("query", DEFAULT_QUERY)
+        return st.secrets.get("phd_mdcro", {}).get(c["query_key"], default)
     except Exception:
-        query = DEFAULT_QUERY
-    return conn.query(query, params={"today": today_iso}, ttl=600)
+        return default
+
+
+def load_from_db(today_iso: str, city: str) -> pd.DataFrame:
+    conn = st.connection(DB_CONN_NAME, type="sql")
+    return conn.query(city_query(city), params={"today": today_iso}, ttl=600)
 
 
 @st.cache_data(show_spinner=False)
-def load_sample() -> pd.DataFrame:
-    return pd.read_excel(DEFAULTS_BOOK, sheet_name="CustomerBase")
+def load_sample(city: str) -> pd.DataFrame:
+    return pd.read_excel(CITIES[city]["book"], sheet_name="CustomerBase")
 
 
 # ───────────────────────────── MDC / vehicle config ─────────────────────────────
@@ -247,18 +267,22 @@ def _builtin_case2():
 
 
 @st.cache_data(show_spinner=False)
-def default_tables() -> Tuple[pd.DataFrame, pd.DataFrame, str]:
-    if os.path.exists(DEFAULT_CONFIG):
-        with open(DEFAULT_CONFIG, "rb") as fh:
+def default_tables(city: str = "Bengaluru") -> Tuple[pd.DataFrame, pd.DataFrame, str]:
+    c = CITIES[city]
+    if os.path.exists(c["config"]):
+        with open(c["config"], "rb") as fh:
             mdc_df, fleet, err = read_config_upload(fh.read())
         if not err:
-            return mdc_df, fleet, os.path.basename(DEFAULT_CONFIG)
+            return mdc_df, fleet, os.path.basename(c["config"])
     try:
-        cfg = sim.read_constraints(DEFAULTS_BOOK)[DEFAULTS_CASE]
-        mdcs = [(c, cfg["sites"].get(c, c), la, lo) for c, la, lo in cfg["depots"]]
+        cfg = sim.read_constraints(c["book"])[DEFAULTS_CASE]
+        mdcs = [(code, cfg["sites"].get(code, code), la, lo) for code, la, lo in cfg["depots"]]
         vehicles = cfg["vehicles"]
-        src = f"{os.path.basename(DEFAULTS_BOOK)} - {DEFAULTS_CASE}"
+        src = f"{os.path.basename(c['book'])} - {DEFAULTS_CASE}"
     except Exception:
+        if city != "Bengaluru":
+            raise RuntimeError(f"No default MDCs/vehicles for {city}: "
+                               f"{os.path.basename(c['config'])} is missing from the app folder")
         mdcs, vehicles = _builtin_case2()
         src = "built-in copy of Banglore Constraint1.xlsx Case 2"
     mdc_df = pd.DataFrame(mdcs, columns=MDC_COLS)
@@ -416,15 +440,31 @@ def unserved_reason(row, cfg: Dict) -> str:
         if row.Tonnage > ton:
             continue
         la, lo = next((d[1], d[2]) for d in cfg["depots"] if d[0] == home)
-        d = haversine_km(row.Latitude, row.Longitude, la, lo)
-        if best is None or dkm - d > best[0]:
-            best = (dkm - d, home, d, dkm, f[0])
-    margin, home, d, cap, label = best
+        d = road_km((la, lo), (float(row.Latitude), float(row.Longitude)))
+        if best is None or dkm - d[0] > best[0]:
+            best = (dkm - d[0], home, d, dkm, f[0])
+    margin, home, (d, how), cap, label = best
     if margin < 0:
-        return (f"Too far: nearest option is a {label} from {home}, {d:.1f} km away in a straight "
-                f"line, but its one-way cap is {cap:g} km. Raise that vehicle's Max one-way km.")
-    return (f"Reachable ({label} from {home}: {d:.1f} km, cap {cap:g} km) - likely the delivery "
-            f"window, drop limits or too few vehicles. Add vehicles or give the solver more time.")
+        article = "an" if label[:1].lower() in "aeiou" else "a"
+        return (f"Too far: the closest option is {article} {label} from {home}, {d:.1f} km away {how}, "
+                f"but its one-way cap is {cap:g} km. Raise that vehicle's Max one-way km.")
+    return (f"Reachable ({label} from {home}: {d:.1f} km {how}, cap {cap:g} km) - likely the "
+            f"delivery window, drop limits or too few vehicles. Add vehicles or give the solver "
+            f"more time.")
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def road_km(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, str]:
+    """Driving km from a to b (OSRM, same source as the plan); straight line if OSRM fails."""
+    try:
+        r = requests.get(f"{OSRM_ROUTE}{a[1]:.6f},{a[0]:.6f};{b[1]:.6f},{b[0]:.6f}",
+                         params={"overview": "false"}, timeout=15)
+        js = r.json()
+        if r.ok and js.get("code") == "Ok":
+            return js["routes"][0]["distance"] / 1000.0, "by road"
+    except Exception:
+        pass
+    return haversine_km(a[0], a[1], b[0], b[1]), "in a straight line"
 
 
 # ───────────────────────────── map ─────────────────────────────
@@ -556,11 +596,47 @@ def signature(*objs) -> str:
     return h.hexdigest()
 
 
+class CityState:
+    """st.session_state, but every key is stored under '<city>::key', so each
+    city keeps its own window edits, uploaded config and plan."""
+
+    def __init__(self, state, city):
+        object.__setattr__(self, "_s", state)
+        object.__setattr__(self, "_p", f"{city}::")
+
+    def __getattr__(self, k):
+        try:
+            return self._s[self._p + k]
+        except KeyError:
+            raise AttributeError(k)
+
+    def __setattr__(self, k, v):
+        self._s[self._p + k] = v
+
+    def __contains__(self, k):
+        return (self._p + k) in self._s
+
+    def get(self, k, default=None):
+        return self._s.get(self._p + k, default)
+
+    def setdefault(self, k, default):
+        if (self._p + k) not in self._s:
+            self._s[self._p + k] = default
+        return self._s[self._p + k]
+
+    def pop(self, k, default=None):
+        return self._s.pop(self._p + k, default)
+
+
 # ───────────────────────────── app ─────────────────────────────
 
 def main():
     st.set_page_config(page_title="MDC Route Planner", layout="wide", page_icon="🚚")
-    ss = st.session_state
+    st.title("🚚 MDC Route Planner")
+    city = st.segmented_control("City", list(CITIES), default="Bengaluru", key="city",
+                                label_visibility="collapsed") or "Bengaluru"
+    C = CITIES[city]
+    ss = CityState(st.session_state, city)   # edits, uploads and plans are kept per city
     ss.setdefault("win_over", {})
     ss.setdefault("incl_over", {})
     ss.setdefault("cust_ver", 0)
@@ -571,8 +647,8 @@ def main():
     st.sidebar.header("Today's customers")
     have_db = db_configured()
     if have_db:
-        st.sidebar.caption(f"From **PHD_MDCRO_Base**, {today:%d %b %Y} only.")
-    elif os.path.exists(DEFAULTS_BOOK):
+        st.sidebar.caption(f"{city}: from **{C['table']}**, {today:%d %b %Y} only.")
+    elif os.path.exists(C["book"]):
         st.sidebar.warning("Database not connected - showing the sample day as a preview. "
                            "Add the connection in `.streamlit/secrets.toml` "
                            "(see `secrets.toml.example`).")
@@ -581,7 +657,8 @@ def main():
                          "app's secrets (Streamlit Cloud: app → Settings → Secrets).")
     if st.sidebar.button("🔄 Refresh data", width="stretch"):
         st.cache_data.clear()
-        ss.pop("fetched_at", None)
+        for name in CITIES:
+            st.session_state.pop(f"{name}::fetched_at", None)
         st.rerun()
     if ss.get("fetched_at", ("",))[0] != today.isoformat():
         ss.fetched_at = (today.isoformat(), datetime.now().strftime("%H:%M:%S"))
@@ -589,11 +666,12 @@ def main():
     raw, source_label, date_note = None, "", None
     try:
         if have_db:
-            raw, date_note = keep_today(load_from_db(today.isoformat()), today)
-            source_label = f"PHD_MDCRO_Base · {today:%d %b %Y}"
-        elif os.path.exists(DEFAULTS_BOOK):
-            raw = load_sample()
-            source_label = "PREVIEW - sample day from Banglore Constraint1.xlsx, not today's orders"
+            raw, date_note = keep_today(load_from_db(today.isoformat(), city), today)
+            source_label = f"{C['table']} · {today:%d %b %Y}"
+        elif os.path.exists(C["book"]):
+            raw = load_sample(city)
+            source_label = (f"PREVIEW - sample day from {os.path.basename(C['book'])}, "
+                            f"not today's orders")
     except Exception as exc:
         st.sidebar.error(f"Couldn't load today's customers: {exc}")
 
@@ -607,7 +685,6 @@ def main():
     seconds = st.sidebar.slider("Time limit (seconds)", 10, 180, 30, 5,
                                 help="Longer = better plans for big days.")
 
-    st.title("🚚 MDC Route Planner")
     if raw is None:
         st.info("No customer data loaded - check the database connection in the sidebar.")
         st.stop()
@@ -625,7 +702,8 @@ def main():
     if "CityId" in raw_n.columns and raw_n.CityId.nunique() > 1:
         cities = sorted(raw_n.CityId.dropna().unique().tolist())
         city = st.sidebar.selectbox("City", cities,
-                                    index=cities.index(DEFAULT_CITY_ID) if DEFAULT_CITY_ID in cities else 0)
+                                    index=cities.index(C["city_id"]) if C["city_id"] in cities else 0,
+                                    key=f"{city}_cityid")
         keep_ids = set(raw_n.loc[raw_n.CityId == city, "CustomerId"])
         cust_all = cust_all[cust_all.CustomerId.isin(keep_ids)].reset_index(drop=True)
         city_note = f" · CityId {city}"
@@ -660,7 +738,7 @@ def main():
             st.error("Use HH:MM-HH:MM, e.g. 9:30-13:30")
 
     edited = st.data_editor(
-        base, key=f"cust_{ss.cust_ver}_{signature(cust_all)}", hide_index=True, width="stretch",
+        base, key=f"{city}_cust_{ss.cust_ver}_{signature(cust_all)}", hide_index=True, width="stretch",
         height=min(420, 38 + 35 * len(base)),
         disabled=["CustomerId", "Customer", "Latitude", "Longitude", "Tonnage"],
         column_config={
@@ -681,7 +759,11 @@ def main():
     bad_win = cust[~cust.DeliveryWindow.apply(window_ok)]
 
     # ── 2 + 3. MDCs and vehicles ──
-    mdc_default, fleet_default, defaults_src = default_tables()
+    try:
+        mdc_default, fleet_default, defaults_src = default_tables(city)
+    except RuntimeError as exc:
+        st.error(str(exc))
+        st.stop()
     mdc_start = ss.get("cfg_mdcs", mdc_default)
     fleet_start = ss.get("cfg_fleet", fleet_default)
     cfg_src = ss.get("cfg_src", f"defaults from {defaults_src}")
@@ -695,7 +777,7 @@ def main():
     with left:
         st.markdown("**MDCs**")
         mdcs = st.data_editor(
-            mdc_start, key=f"mdc_{ss.cfg_ver}", num_rows="dynamic", hide_index=True, width="stretch",
+            mdc_start, key=f"{city}_mdc_{ss.cfg_ver}", num_rows="dynamic", hide_index=True, width="stretch",
             column_config={"Latitude": st.column_config.NumberColumn(format="%.6f"),
                            "Longitude": st.column_config.NumberColumn(format="%.6f")})
     with right:
@@ -703,7 +785,7 @@ def main():
         n_active = int(fleet_start.Active.map(as_bool).sum())
         st.markdown(f"**Vehicles** ({len(fleet_start)} on file)")
         fleet = st.data_editor(
-            fleet_start, key=f"fleet_{ss.cfg_ver}", num_rows="dynamic", hide_index=True, width="stretch",
+            fleet_start, key=f"{city}_fleet_{ss.cfg_ver}", num_rows="dynamic", hide_index=True, width="stretch",
             height=min(460, 38 + 35 * (len(fleet_start) + 1)),
             column_config={
                 "Active": st.column_config.CheckboxColumn(width="small", default=True),
@@ -720,9 +802,9 @@ def main():
 
     d1, d2, d3 = st.columns([1, 2, 1])
     d1.download_button("⬇️ Download MDCs + vehicles (.xlsx)", config_workbook(mdcs, fleet),
-                       f"MDC_Vehicle_Config_{today:%Y%m%d}.xlsx",
+                       f"MDC_Vehicle_Config_{city}_{today:%Y%m%d}.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
-    up = d2.file_uploader("⬆️ Upload updated MDCs + vehicles", type=["xlsx"], key=f"cfg_up_{ss.cfg_ver}",
+    up = d2.file_uploader("⬆️ Upload updated MDCs + vehicles", type=["xlsx"], key=f"{city}_cfg_up_{ss.cfg_ver}",
                           label_visibility="collapsed")
     if d3.button("↺ Reset to defaults", width="stretch"):
         for k in ("cfg_mdcs", "cfg_fleet", "cfg_src"):
@@ -806,7 +888,7 @@ def main():
     st.subheader("Map")
     with st.spinner("Drawing routes along OpenStreetMap roads…"):
         fmap, fallbacks = build_map(res, pcfg, pcust)
-    st_folium(fmap, height=620, use_container_width=True, returned_objects=[], key="plan_map")
+    st_folium(fmap, height=620, use_container_width=True, returned_objects=[], key=f"{city}_plan_map")
     if fallbacks:
         st.caption(f"{fallbacks} route(s) drawn as dashed straight lines - the OpenStreetMap "
                    f"routing service didn't answer for them.")
@@ -818,7 +900,7 @@ def main():
 
     st.download_button(
         "⬇️ Download plan (.xlsx)", results_workbook(res, pcfg, pcust, plan["mdcs"], plan["fleet"]),
-        f"MDC_Route_Plan_{today:%Y%m%d}.xlsx",
+        f"MDC_Route_Plan_{city}_{today:%Y%m%d}.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
 

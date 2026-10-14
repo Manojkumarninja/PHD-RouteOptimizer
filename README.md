@@ -1,7 +1,9 @@
 # PHD Route Optimizer
 
-Daily delivery route planner for Bengaluru's MDCs. It loads today's customer
-orders from the `PHD_MDCRO_Base` table, assigns every customer to an MDC and
+Daily delivery route planner for the Bengaluru and Chennai MDCs. Pick the city
+at the top of the app. It loads today's customer orders from that city's table
+(`PHD_MDCRO_Base` for Bengaluru, `PHD_MDCRO_Base_CHN` for Chennai), assigns every
+customer to an MDC and
 a vehicle, and plans one-way delivery routes (MDC → last customer) at the
 lowest cost, shown on an OpenStreetMap map.
 
@@ -12,8 +14,9 @@ lowest cost, shown on an OpenStreetMap map.
 - **Editable MDCs and vehicles:** one row per vehicle with its maximum drops,
   one-way distance cap, capacity in kg, fixed cost, cost per km and optional
   shift times. Download the settings as Excel, edit them, and upload the file
-  back. Defaults come from `default_config.xlsx` (MDC1 + MDC2 Boomanalli, 40
-  vehicles).
+  back. Defaults: `default_config.xlsx` for Bengaluru (MDC1 + MDC2 Boomanalli,
+  40 vehicles) and `default_config_chennai.xlsx` for Chennai (MDC1 + MDC2
+  Saligramam, 3 Autos + 37 bikes). Each city keeps its own settings and plan.
 - **Editable delivery windows** per customer, or one window applied to all.
 - **Solver:** Google OR-Tools on real road distances from OSRM, which uses
   OpenStreetMap data, so no API key is needed. By default it uses the fewest
@@ -47,6 +50,9 @@ lowest cost, shown on an OpenStreetMap map.
    query = "SELECT * FROM PHD_MDCRO_Base WHERE DATE(DeliveryDate) = :today"
    ```
 
+   The `[phd_mdcro]` section is optional. Chennai reads `PHD_MDCRO_Base_CHN`
+   automatically; override it with `query_chennai = "..."` if needed.
+
 4. **Deploy.** The database must accept connections from Streamlit Cloud. If
    it only allows whitelisted IPs, ask your DB admin to allow Streamlit
    Cloud's outbound IPs.
@@ -68,12 +74,14 @@ streamlit run mdc_streamlit_app.py
 |---|---|
 | `mdc_streamlit_app.py` | The MDC route planner app |
 | `simulate_bangalore.py` | Multi-depot routing engine (OR-Tools); also a command-line tool for comparing scenarios from a constraints workbook |
-| `default_config.xlsx` | Default MDCs + vehicles. Replace it to change the defaults everyone sees |
+| `default_config.xlsx`, `default_config_chennai.xlsx` | Default MDCs + vehicles for Bengaluru / Chennai. Replace a file to change the defaults everyone sees |
 | `app.py`, `streamlit_app.py` | Entry points - both open the MDC route planner, so either works as the Streamlit Cloud main file |
 | `single_depot_app.py`, `optimizer.py` | Original single-depot route planner (`streamlit run single_depot_app.py`); the engine reuses its distance helpers |
 | `plot_simulation.py` | Route-map PNGs for scenario comparisons |
 
-## Input table: `PHD_MDCRO_Base`
+## Input tables: `PHD_MDCRO_Base` (Bengaluru), `PHD_MDCRO_Base_CHN` (Chennai)
+
+Both tables have the same columns:
 
 | Column | Used as |
 |---|---|
