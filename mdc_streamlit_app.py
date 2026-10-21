@@ -77,6 +77,16 @@ CITIES = {
     },
 }
 DEFAULT_WINDOW = "9:30-13:30"
+
+# Any other non-empty PHD_MDCRO_Base_<XXX> table in the database shows up as a
+# city automatically, with starter MDCs + vehicles built from its customers.
+TABLE_RE = re.compile(r"PHD_MDCRO_Base(_[A-Za-z0-9]+)?")
+CITY_NAMES = {"BLR": "Bengaluru", "CHN": "Chennai", "MAA": "Chennai", "DLH": "Delhi", "DEL": "Delhi",
+              "MUM": "Mumbai", "BOM": "Mumbai", "HYD": "Hyderabad", "PUN": "Pune", "PNQ": "Pune",
+              "KOL": "Kolkata", "CCU": "Kolkata", "AMD": "Ahmedabad", "JAI": "Jaipur",
+              "COK": "Kochi", "KOC": "Kochi", "GOA": "Goa", "LKO": "Lucknow", "CHD": "Chandigarh",
+              "IND": "Indore", "NGP": "Nagpur", "CBE": "Coimbatore", "VTZ": "Visakhapatnam",
+              "NOI": "Noida", "GGN": "Gurugram", "GUR": "Gurugram"}
 OUT_OF_CITY_KM = 60              # farther than this from the day's median = bad location
 VEHICLE_PENALTY_RS = 10_000      # objective-only, see sim.solve_case docstring
 OSRM_ROUTE = "http://router.project-osrm.org/route/v1/driving/"
@@ -280,7 +290,7 @@ def _builtin_case2():
                             "FixedCost_Rs", "VariableCost_Rs_per_km"], v)) for v in veh]
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner="Preparing MDCs and vehicles…")
 def default_tables(city: str = "Bengaluru") -> Tuple[pd.DataFrame, pd.DataFrame, str]:
     c = CITIES[city]
     if os.path.exists(c["config"]):
@@ -294,6 +304,8 @@ def default_tables(city: str = "Bengaluru") -> Tuple[pd.DataFrame, pd.DataFrame,
         vehicles = cfg["vehicles"]
         src = f"{os.path.basename(c['book'])} - {DEFAULTS_CASE}"
     except Exception:
+        if c.get("auto"):
+            return starter_tables(c["table"])
         if city != "Bengaluru":
             raise RuntimeError(f"No default MDCs/vehicles for {city}: "
                                f"{os.path.basename(c['config'])} is missing from the app folder")
@@ -304,6 +316,58 @@ def default_tables(city: str = "Bengaluru") -> Tuple[pd.DataFrame, pd.DataFrame,
     fleet.insert(0, "Active", True)
     fleet["ShiftStart"], fleet["ShiftEnd"] = "", ""
     return mdc_df, fleet[FLEET_COLS], src
+
+
+def starter_tables(table: str) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Starter MDCs + vehicles from the customer locations in `table` (see city_config.py)."""
+    from city_config import build_starter
+    if not TABLE_RE.fullmatch(table):
+        raise RuntimeError(f"'{table}' is not a PHD_MDCRO_Base table")
+    raw = st.connection(DB_CONN_NAME, type="sql").query(f"SELECT * FROM {table}", ttl=600)
+    cust, _, missing = prepare_customers(raw)
+    if missing or cust.empty:
+        raise RuntimeError(f"{table} has no usable customers to place MDCs from "
+                           f"({'missing ' + ', '.join(missing) if missing else 'no valid locations'})")
+    mdcs, fleet, _ = build_starter(cust, 2)
+    return (mdcs[MDC_COLS], fleet[FLEET_COLS],
+            f"starter settings built from {len(cust)} customer locations in {table} "
+            f"(2 auto-placed MDCs) - adjust them to your real sites")
+
+
+@st.cache_data(show_spinner="Looking for city tables…", ttl=600)
+def discover_cities() -> Dict[str, str]:
+    """{city name: table} for non-empty PHD_MDCRO_Base_* tables not already in CITIES."""
+    conn = st.connection(DB_CONN_NAME, type="sql")
+    names = conn.query("SELECT table_name AS t FROM information_schema.tables "
+                       "WHERE table_schema = DATABASE() AND table_name LIKE 'PHD\\_MDCRO\\_Base%%'",
+                       ttl=600).iloc[:, 0].tolist()
+    known = {c["table"].lower() for c in CITIES.values() if not c.get("auto")}
+    taken = {k for k, c in CITIES.items() if not c.get("auto")}
+    found = {}
+    for t in sorted(names):
+        if not TABLE_RE.fullmatch(t) or t.lower() in known:
+            continue
+        if not int(conn.query(f"SELECT COUNT(*) AS n FROM {t}", ttl=600).iloc[0, 0]):
+            continue                                        # empty table, e.g. a placeholder
+        suffix = t.split("_")[-1].upper()
+        name = CITY_NAMES.get(suffix, suffix.title())
+        if name in taken or name in found:
+            name = f"{name} ({suffix})"
+        found[name] = t
+    return found
+
+
+def register_discovered() -> None:
+    try:
+        found = discover_cities()
+    except Exception:
+        return                                              # DB unreachable - known cities only
+    for name, table in found.items():
+        slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+        CITIES.setdefault(name, {
+            "table": table, "query_key": f"query_{slug}", "city_id": None, "auto": True,
+            "config": os.path.join(APP_DIR, f"default_config_{slug}.xlsx"), "book": "",
+        })
 
 
 def config_workbook(mdcs: pd.DataFrame, fleet: pd.DataFrame) -> bytes:
@@ -647,6 +711,8 @@ class CityState:
 def main():
     st.set_page_config(page_title="MDC Route Planner", layout="wide", page_icon="🚚")
     st.title("🚚 MDC Route Planner")
+    if db_configured():
+        register_discovered()
     city = st.segmented_control("City", list(CITIES), default="Bengaluru", key="city",
                                 label_visibility="collapsed") or "Bengaluru"
     C = CITIES[city]
@@ -669,6 +735,10 @@ def main():
     else:
         st.sidebar.error("Database not connected. Add the `[connections.phd_db]` section to the "
                          "app's secrets (Streamlit Cloud: app → Settings → Secrets).")
+    if C.get("auto"):
+        st.sidebar.info(f"{city} was found in the database ({C['table']}). Its MDCs and vehicles are "
+                        f"starter settings built from customer locations - adjust them to your real "
+                        f"sites, then download the file to reuse it.")
     if st.sidebar.button("🔄 Refresh data", width="stretch"):
         st.cache_data.clear()
         for name in CITIES:
@@ -688,6 +758,10 @@ def main():
                             f"not today's orders")
     except Exception as exc:
         st.sidebar.error(f"Couldn't load today's customers: {exc}")
+
+    st.sidebar.caption("New city? Add a `PHD_MDCRO_Base_<CODE>` table with today's orders "
+                       "(e.g. `PHD_MDCRO_Base_PUN`) and press Refresh - it appears in the city "
+                       "switch with starter MDCs and vehicles.")
 
     # ── sidebar: solver ──
     st.sidebar.header("Solver")
@@ -775,7 +849,7 @@ def main():
     # ── 2 + 3. MDCs and vehicles ──
     try:
         mdc_default, fleet_default, defaults_src = default_tables(city)
-    except RuntimeError as exc:
+    except Exception as exc:
         st.error(str(exc))
         st.stop()
     mdc_start = ss.get("cfg_mdcs", mdc_default)

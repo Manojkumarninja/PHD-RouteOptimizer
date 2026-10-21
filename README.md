@@ -1,7 +1,9 @@
 # PHD Route Optimizer
 
 Daily delivery route planner for MDCs in Bengaluru, Chennai, Delhi, Mumbai and
-Hyderabad. Pick the city at the top of the app. It loads today's customer orders
+Hyderabad. Any other non-empty `PHD_MDCRO_Base_<CODE>` table
+(e.g. `PHD_MDCRO_Base_PUN`) is picked up automatically as a new city, with
+starter MDCs and vehicles built from its customer locations. Pick the city at the top of the app. It loads today's customer orders
 from that city's table, assigns every customer to an MDC and
 a vehicle, and plans one-way delivery routes (MDC → last customer) at the
 lowest cost, shown on an OpenStreetMap map.
@@ -77,7 +79,8 @@ streamlit run mdc_streamlit_app.py
 | `mdc_streamlit_app.py` | The MDC route planner app |
 | `simulate_bangalore.py` | Multi-depot routing engine (OR-Tools); also a command-line tool for comparing scenarios from a constraints workbook |
 | `default_config.xlsx`, `default_config_<city>.xlsx` | Default MDCs + vehicles per city. Replace a file to change the defaults everyone sees |
-| `build_city_config.py` | Builds a starter `default_config_<city>.xlsx` from a city's customer locations: `python build_city_config.py Pune PHD_MDCRO_Base_PUN` (needs local DB secrets) |
+| `city_config.py` | How starter MDCs + vehicles are built from customer locations (used by the app for new cities) |
+| `build_city_config.py` | Saves a city's starter settings as `default_config_<city>.xlsx` so everyone gets the same defaults: `python build_city_config.py Pune PHD_MDCRO_Base_PUN` (needs local DB secrets) |
 | `app.py`, `streamlit_app.py` | Entry points - both open the MDC route planner, so either works as the Streamlit Cloud main file |
 | `single_depot_app.py`, `optimizer.py` | Original single-depot route planner (`streamlit run single_depot_app.py`); the engine reuses its distance helpers |
 | `plot_simulation.py` | Route-map PNGs for scenario comparisons |
