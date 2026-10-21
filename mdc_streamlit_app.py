@@ -61,6 +61,20 @@ CITIES = {
         "config": os.path.join(APP_DIR, "default_config_chennai.xlsx"),
         "book": os.path.join(DATA_DIR, "Chennai Constraint1.xlsx"),
     },
+    # no constraint workbook - starter configs built from customer locations
+    # by build_city_config.py
+    "Delhi": {
+        "table": "PHD_MDCRO_Base_DLH", "query_key": "query_delhi", "city_id": None,
+        "config": os.path.join(APP_DIR, "default_config_delhi.xlsx"), "book": "",
+    },
+    "Mumbai": {
+        "table": "PHD_MDCRO_Base_MUM", "query_key": "query_mumbai", "city_id": None,
+        "config": os.path.join(APP_DIR, "default_config_mumbai.xlsx"), "book": "",
+    },
+    "Hyderabad": {
+        "table": "PHD_MDCRO_Base_HYD", "query_key": "query_hyderabad", "city_id": None,
+        "config": os.path.join(APP_DIR, "default_config_hyderabad.xlsx"), "book": "",
+    },
 }
 DEFAULT_WINDOW = "9:30-13:30"
 OUT_OF_CITY_KM = 60              # farther than this from the day's median = bad location

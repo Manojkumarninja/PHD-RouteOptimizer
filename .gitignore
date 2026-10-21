@@ -15,3 +15,6 @@ __pycache__/
 *.kml
 !default_config.xlsx
 !default_config_chennai.xlsx
+!default_config_delhi.xlsx
+!default_config_mumbai.xlsx
+!default_config_hyderabad.xlsx
